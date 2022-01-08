@@ -155,17 +155,18 @@ public class SyncSharedDrives {
         long start = System.currentTimeMillis();
         HashMap<String, String> foldersPathToID = new HashMap<>();
 
-        searchAllFoldersRecursive(folderName, driveId, foldersPathToID);
+        searchAllFoldersRecursive(folderName.trim(), driveId, foldersPathToID);
 
         HashMap<String, List<File>> pathFile = new HashMap<>();
         int nFiles = 0;
         for (Entry<String, String> pathFolder : foldersPathToID.entrySet()) {
             List<File> result = search(Type.FILE, pathFolder.getValue());
             if (result.size() > 0) {
-                pathFile.putIfAbsent(pathFolder.getKey(), new ArrayList<>());
+                String targetPathFolder = pathFolder.getKey().trim();
+                pathFile.putIfAbsent(targetPathFolder, new ArrayList<>());
                 for (File file : result) {
                     nFiles++;
-                    pathFile.get(pathFolder.getKey()).add(file);
+                    pathFile.get(targetPathFolder).add(file);
                 }
             }
         }
@@ -179,8 +180,8 @@ public class SyncSharedDrives {
 
             for (Entry<String, List<File>> pathName : pathFile.entrySet()) {
 
-                String folderOutName = pathOUT + "/" + pathName.getKey();
-                new java.io.File(folderOutName).mkdirs();
+                String folderOutName = pathOUT + java.io.File.separator + pathName.getKey();
+                new java.io.File(folderOutName.trim()).mkdirs();
 
                 for (File file : pathName.getValue()) {
                     boolean targetedFile = file.getName().endsWith(".jpg")
@@ -191,7 +192,7 @@ public class SyncSharedDrives {
                         continue;
                     }
 
-                    java.io.File img = new java.io.File(folderOutName + "/" + normalizeName(file.getName()));
+                    java.io.File img = new java.io.File(folderOutName + java.io.File.separator + normalizeName(file.getName()));
                     if (img.exists()) {
                         nFileAlready++;
                         continue;
@@ -201,7 +202,7 @@ public class SyncSharedDrives {
                         service.files().get(file.getId()).executeMediaAndDownloadTo(fout);
                         nFileDownloaded++;
                     } catch (Exception e) {
-                        log.warn("Could not download the file : " + folderOutName + "/" + file.getName(), e);
+                        log.warn("Could not download the file : " + folderOutName + java.io.File.separator + file.getName(), e);
                     }
                 }
             }
@@ -236,7 +237,7 @@ public class SyncSharedDrives {
         // dig deeper
         if (result.size() > 0) {
             for (File folder : result) {
-                searchAllFoldersRecursive(nameFold + "/" + normalizeName(folder.getName()), folder.getId(), map);
+                searchAllFoldersRecursive(nameFold + java.io.File.separator + normalizeName(folder.getName()), folder.getId(), map);
             }
         }
     }
@@ -269,6 +270,6 @@ public class SyncSharedDrives {
     }
 
     private static String normalizeName(String name) {
-        return name.replace("/", "_").replace(":", "").replace("\\", "_");
+        return name.replace("/", "_").replace(":", "").replace("\\", "_").trim();
     }
 }
