@@ -7,11 +7,20 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
+
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
@@ -37,6 +46,7 @@ public class SyncSharedDrives {
 
     private static String pathIN = null;
     private static String pathOUT = null;
+    private static String mpcContribUrl = null;
 
     private static int totalNewFile = 0;
     private static int totalAlreadyFile = 0;
@@ -67,9 +77,9 @@ public class SyncSharedDrives {
         // Build flow and trigger user authorization request.
         GoogleAuthorizationCodeFlow flow = new GoogleAuthorizationCodeFlow.Builder(
                 HTTP_TRANSPORT, JSON_FACTORY, clientSecrets, SCOPES)
-                        .setDataStoreFactory(new FileDataStoreFactory(new java.io.File(TOKENS_DIRECTORY_PATH)))
-                        .setAccessType("offline")
-                        .build();
+                .setDataStoreFactory(new FileDataStoreFactory(new java.io.File(TOKENS_DIRECTORY_PATH)))
+                .setAccessType("offline")
+                .build();
         LocalServerReceiver receiver = new LocalServerReceiver.Builder().setPort(8888).build();
         return new AuthorizationCodeInstalledApp(flow, receiver).authorize("dummy@gmail.com");
     }
@@ -96,6 +106,10 @@ public class SyncSharedDrives {
                     pathOUT = line.replace("OUT=", "");
                     log.info("Path OUT : " + pathOUT);
                 }
+                if (line.startsWith("MPC_FILL_CONTRIB=")) {
+                    mpcContribUrl = line.replace("MPC_FILL_CONTRIB=", "");
+                    log.info("MPC autofill contrib url : " + mpcContribUrl);
+                }
             }
         }
         if (pathIN == null || pathOUT == null) {
@@ -121,7 +135,9 @@ public class SyncSharedDrives {
 
         java.io.File[] directoryListing = folderIn.listFiles();
 
-        long startTotal = System.currentTimeMillis();
+        Map<String, String> googleIDName = new HashMap<>();
+
+        // scanning all driveFiles
         if (directoryListing != null && directoryListing.length > 0) {
             for (java.io.File child : directoryListing) {
                 String folderName = null;
@@ -132,7 +148,7 @@ public class SyncSharedDrives {
                         folderName = normalizeName(child.getName());
                         driveId = br.readLine();
                         if (driveId != null && driveId.length() > 0) {
-                            treatDrive(folderName, driveId);
+                            googleIDName.put(driveId, folderName);
                         }
                     }
                 } catch (Exception e) {
@@ -143,9 +159,67 @@ public class SyncSharedDrives {
         } else {
             log.err("The IN folder should have file pointing to the drives to sync");
         }
+
+        // reading MPC contrib page
+        if (mpcContribUrl != null) {
+            try {
+                URL url = new URL(mpcContribUrl);
+                HttpURLConnection connection;
+                try {
+                    connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestProperty("accept", "application/json");
+
+                    try {
+                        InputStream responseStream = connection.getInputStream();
+                        Document document = Jsoup.parse(responseStream, "UTF-8",
+                                mpcContribUrl);
+
+                        Elements allTagA = document.getElementsByTag("a");
+
+                        int nNewDrive = 0;
+                        int nOldDrive = 0;
+                        for (Element element : allTagA) {
+                            if (element.attributes().get("href").contains("drive.google")) {
+                                String googleId = element.attributes().get("href")
+                                        .substring(element.attributes().get("href").indexOf("id=") + 3);
+                                if (!googleIDName.containsKey(googleId)) {
+                                    log.info(element.text() + " is a new drive found from MPCautofill");
+                                    nNewDrive++;
+                                    googleIDName.put(googleId, element.text());
+                                } else {
+                                    nOldDrive++;
+                                    log.info(element.text() + " already found in local listed drives (was known as "
+                                            + googleIDName.get(googleId) + ")");
+                                }
+                            }
+                        }
+                        log.info(nNewDrive + " new drives found in MPCfill");
+                        log.info(nOldDrive + " old drives already known");
+                    } catch (IOException e) {
+                        log.err("Could not open the stream url : " + mpcContribUrl, e);
+                    }
+                } catch (IOException e1) {
+                    log.err("Could not connect the strem url : " + mpcContribUrl, e1);
+                }
+            } catch (MalformedURLException e2) {
+                log.err("The MPC url is malformed : " + mpcContribUrl, e2);
+            }
+        }
+
+        // start downloading
+        long startTotal = System.currentTimeMillis();
+        for (Entry<String, String> entry : googleIDName.entrySet()) {
+            try {
+                treatDrive(entry.getValue(), entry.getKey());
+            } catch (Exception e) {
+                log.err("An error occured while treating drive : " + entry.getValue() + " [id:" + entry.getKey() + "]",
+                        e);
+            }
+        }
+
         long endTotal = System.currentTimeMillis();
         log.info("SyncSharedDrive ended it took a total time of " + convertTime(endTotal - startTotal));
-        log.info(directoryListing.length + " drives synchronized");
+        log.info(googleIDName.size() + " drives synchronized");
         log.info(totalNewFile + " new files downloaded");
         log.info(totalAlreadyFile + " were already present");
     }
@@ -186,13 +260,17 @@ public class SyncSharedDrives {
                 for (File file : pathName.getValue()) {
                     boolean targetedFile = file.getName().endsWith(".jpg")
                             || file.getName().endsWith(".jpeg")
-                            || file.getName().endsWith(".png");
+                            || file.getName().endsWith(".png")
+                            || file.getName().endsWith(".PNG")
+                            || file.getName().endsWith(".JPEG")
+                            || file.getName().endsWith(".JPG");
                     if (!targetedFile) {
                         log.debug("Skipping unwanted file : " + file.getName());
                         continue;
                     }
 
-                    java.io.File img = new java.io.File(folderOutName + java.io.File.separator + normalizeName(file.getName()));
+                    java.io.File img = new java.io.File(
+                            folderOutName + java.io.File.separator + normalizeName(file.getName()));
                     if (img.exists()) {
                         nFileAlready++;
                         continue;
@@ -202,7 +280,8 @@ public class SyncSharedDrives {
                         service.files().get(file.getId()).executeMediaAndDownloadTo(fout);
                         nFileDownloaded++;
                     } catch (Exception e) {
-                        log.warn("Could not download the file : " + folderOutName + java.io.File.separator + file.getName(), e);
+                        log.warn("Could not download the file : " + folderOutName + java.io.File.separator
+                                + file.getName(), e);
                     }
                 }
             }
@@ -237,7 +316,8 @@ public class SyncSharedDrives {
         // dig deeper
         if (result.size() > 0) {
             for (File folder : result) {
-                searchAllFoldersRecursive(nameFold + java.io.File.separator + normalizeName(folder.getName()), folder.getId(), map);
+                searchAllFoldersRecursive(nameFold + java.io.File.separator + normalizeName(folder.getName()),
+                        folder.getId(), map);
             }
         }
     }
