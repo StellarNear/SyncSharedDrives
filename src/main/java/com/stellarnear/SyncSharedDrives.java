@@ -347,6 +347,7 @@ public class SyncSharedDrives {
             }
             if (allDls.size() > 0) {
                 ExecutorService executor = Executors.newFixedThreadPool(availableProcessors * 4);
+               
                 log.info(
                         allDls.size() + " files will be downloaded using " + availableProcessors * 4
                                 + " parralel thread  !");
