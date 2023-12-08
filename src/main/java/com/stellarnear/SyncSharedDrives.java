@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -16,6 +17,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -23,11 +28,14 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
 import com.google.api.client.auth.oauth2.Credential;
+import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow;
 import com.google.api.client.googleapis.auth.oauth2.GoogleClientSecrets;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
+import com.google.api.client.http.HttpRequest;
+import com.google.api.client.http.HttpRequestInitializer;
 import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.api.client.json.JsonFactory;
 import com.google.api.client.json.jackson2.JacksonFactory;
@@ -40,6 +48,7 @@ import com.google.api.services.drive.model.FileList;
 public class SyncSharedDrives {
     private static final String APPLICATION_NAME = "Google Drive API Java Quickstart";
     private static final JsonFactory JSON_FACTORY = JacksonFactory.getDefaultInstance();
+    private static NetHttpTransport HTTP_TRANSPORT = null;
     private static final String TOKENS_DIRECTORY_PATH = "tokens";
     private static Drive service;
     private static CustomLog log = new CustomLog(SyncSharedDrives.class);
@@ -57,7 +66,7 @@ public class SyncSharedDrives {
      */
     private static final List<String> SCOPES = Arrays.asList(DriveScopes.DRIVE_METADATA_READONLY,
             DriveScopes.DRIVE_READONLY);
-    private static final String CREDENTIALS_FILE_PATH = "/creds.json";
+    private static final String CREDENTIALS_FILE_PATH = "creds.json";
 
     /**
      * Creates an authorized Credential object.
@@ -68,7 +77,7 @@ public class SyncSharedDrives {
      */
     private static Credential getCredentials(final NetHttpTransport HTTP_TRANSPORT) throws IOException {
         // Load client secrets.
-        InputStream in = SyncSharedDrives.class.getResourceAsStream(CREDENTIALS_FILE_PATH);
+        InputStream in = SyncSharedDrives.class.getClassLoader().getResourceAsStream(CREDENTIALS_FILE_PATH);
         if (in == null) {
             throw new FileNotFoundException("Resource not found: " + CREDENTIALS_FILE_PATH);
         }
@@ -84,11 +93,25 @@ public class SyncSharedDrives {
         return new AuthorizationCodeInstalledApp(flow, receiver).authorize("dummy@gmail.com");
     }
 
+    private static HttpRequestInitializer setHttpTimeout(final HttpRequestInitializer requestInitializer) {
+        return new HttpRequestInitializer() {
+            @Override
+            public void initialize(HttpRequest httpRequest) throws IOException {
+                requestInitializer.initialize(httpRequest);
+                httpRequest.setConnectTimeout(5 * 60000); // 3 minutes connect timeout
+                httpRequest.setReadTimeout(5 * 60000); // 3 minutes read timeout
+            }
+        };
+    }
+
     public static void main(String... args) throws Exception {
         // Build a new authorized API client service.
-        final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
-        service = new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY, getCredentials(HTTP_TRANSPORT))
-                .setApplicationName(APPLICATION_NAME).build();
+
+        HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
+        Drive.Builder builder = new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY,
+                setHttpTimeout(getCredentials(HTTP_TRANSPORT))).setApplicationName(APPLICATION_NAME);
+
+        service = builder.build();
 
         log.info("Thanks for using SyncSharedDrive !");
         log.info("Reading Config file");
@@ -180,12 +203,26 @@ public class SyncSharedDrives {
                         int nOldDrive = 0;
                         for (Element element : allTagA) {
                             if (element.attributes().get("href").contains("drive.google")) {
+
                                 String googleId = element.attributes().get("href")
-                                        .substring(element.attributes().get("href").indexOf("id=") + 3);
+                                        .substring(element.attributes().get("href").lastIndexOf("/") + 1);
+
+                                if (googleId.contains("id=")) {
+                                    googleId = googleId.substring(googleId.indexOf("id=") + 3);
+                                }
+
                                 if (!googleIDName.containsKey(googleId)) {
                                     log.info(element.text() + " is a new drive found from MPCautofill");
                                     nNewDrive++;
                                     googleIDName.put(googleId, element.text());
+                                    // saving the file for later run in case they reaname the folder name but it's
+                                    // still the same
+                                    java.io.File driveFile = new java.io.File(
+                                            pathIN + java.io.File.separator + element.text());
+                                    driveFile.createNewFile();
+                                    FileWriter myWriter = new FileWriter(driveFile.getAbsolutePath());
+                                    myWriter.write(googleId);
+                                    myWriter.close();
                                 } else {
                                     nOldDrive++;
                                     log.info(element.text() + " already found in local listed drives (was known as "
@@ -207,10 +244,20 @@ public class SyncSharedDrives {
         }
 
         // start downloading
+        int nDrive = 0;
         long startTotal = System.currentTimeMillis();
         for (Entry<String, String> entry : googleIDName.entrySet()) {
             try {
+                log.info("Starting sync of dive : " + entry.getValue());
+                long start = System.currentTimeMillis();
                 treatDrive(entry.getValue(), entry.getKey());
+                long end = System.currentTimeMillis();
+                nDrive++;
+                log.info("End sync of dive " + nDrive + "/" + googleIDName.entrySet().size() + " : " + entry.getValue()
+                        + " (it took " + convertTime(end - start) + ")");
+            } catch (RefreshTokenException eToken) {
+                log.err("Token wasn't good retrying !");
+                main(args);
             } catch (Exception e) {
                 log.err("An error occured while treating drive : " + entry.getValue() + " [id:" + entry.getKey() + "]",
                         e);
@@ -218,15 +265,16 @@ public class SyncSharedDrives {
         }
 
         long endTotal = System.currentTimeMillis();
-        log.info("SyncSharedDrive ended it took a total time of " + convertTime(endTotal - startTotal));
+        log.info("SyncSharedDrive ended it took a total time of " +
+
+                convertTime(endTotal - startTotal));
         log.info(googleIDName.size() + " drives synchronized");
         log.info(totalNewFile + " new files downloaded");
         log.info(totalAlreadyFile + " were already present");
     }
 
     private static void treatDrive(String folderName, String driveId) throws Exception {
-        log.info("Starting sync of dive : " + folderName);
-        long start = System.currentTimeMillis();
+
         HashMap<String, String> foldersPathToID = new HashMap<>();
 
         searchAllFoldersRecursive(folderName.trim(), driveId, foldersPathToID);
@@ -246,11 +294,16 @@ public class SyncSharedDrives {
         }
 
         int nFileAlready = 0;
-        int nFileDownloaded = 0;
+        AtomicInteger nFileDownloaded = new AtomicInteger(0);
         if (pathFile.isEmpty()) {
             log.info("No files found");
         } else {
             log.info(nFiles + " files found on the drive");
+
+            // Set<Thread> allDownlaodThread=new HashSet<>();
+            int availableProcessors = Runtime.getRuntime().availableProcessors();
+
+            List<Callable<Void>> allDls = new ArrayList<>();
 
             for (Entry<String, List<File>> pathName : pathFile.entrySet()) {
 
@@ -275,22 +328,38 @@ public class SyncSharedDrives {
                         nFileAlready++;
                         continue;
                     }
-                    try {
-                        FileOutputStream fout = new FileOutputStream(img);
-                        service.files().get(file.getId()).executeMediaAndDownloadTo(fout);
-                        nFileDownloaded++;
-                    } catch (Exception e) {
-                        log.warn("Could not download the file : " + folderOutName + java.io.File.separator
-                                + file.getName(), e);
-                    }
+
+                    allDls.add(new Callable<Void>() {
+                        @Override
+                        public Void call() {
+                            try {
+                                FileOutputStream fout = new FileOutputStream(img);
+                                service.files().get(file.getId()).executeMediaAndDownloadTo(fout);
+                                nFileDownloaded.incrementAndGet();
+                            } catch (Exception e) {
+                                log.warn("Could not download the file : " + folderOutName + java.io.File.separator
+                                        + file.getName(), e);
+                            }
+                            return null;
+                        }
+                    });
                 }
             }
-            log.info(nFileDownloaded + " new files downloaded ! (" + nFileAlready + " files already present)");
-            totalNewFile += nFileDownloaded;
+            if (allDls.size() > 0) {
+                ExecutorService executor = Executors.newFixedThreadPool(availableProcessors * 4);
+                log.info(
+                        allDls.size() + " files will be downloaded using " + availableProcessors * 4
+                                + " parralel thread  !");
+                executor.invokeAll(allDls);
+                log.info(
+                        nFileDownloaded.get() + " new files downloaded ! (" + nFileAlready + " files already present)");
+            } else {
+                log.info("No file to download (" + nFileAlready + " files already present)");
+            }
+
+            totalNewFile += nFileDownloaded.get();
             totalAlreadyFile += nFileAlready;
         }
-        long end = System.currentTimeMillis();
-        log.info("End sync of dive : " + folderName + " (it took " + convertTime(end - start) + ")");
     }
 
     private static String convertTime(long l) {
@@ -309,10 +378,13 @@ public class SyncSharedDrives {
     }
 
     private static void searchAllFoldersRecursive(String nameFold, String id, HashMap<String, String> map)
-            throws IOException {
+            throws IOException, RefreshTokenException {
 
         map.putIfAbsent(nameFold, id);
-        List<File> result = search(Type.FOLDER, id);
+        List<File> result;
+
+        result = search(Type.FOLDER, id);
+
         // dig deeper
         if (result.size() > 0) {
             for (File folder : result) {
@@ -323,7 +395,7 @@ public class SyncSharedDrives {
     }
 
     private static List<com.google.api.services.drive.model.File> search(Type type, String folderId)
-            throws IOException {
+            throws IOException, RefreshTokenException {
         String nextPageToken = "go";
         List<File> driveFolders = new ArrayList<>();
         com.google.api.services.drive.Drive.Files.List request = service.files()
@@ -340,6 +412,17 @@ public class SyncSharedDrives {
                 nextPageToken = result.getNextPageToken();
                 request.setPageToken(nextPageToken);
                 return driveFolders;
+            } catch (TokenResponseException tokenError) {
+                if (tokenError.getDetails().getError().equalsIgnoreCase("invalid_grant")) {
+                    log.err("Token no more valid removing it Please retry");
+                    java.io.File cred = new java.io.File("./tokens/StoredCredential");
+                    if (cred.exists()) {
+                        cred.delete();
+                    }
+                    throw new RefreshTokenException("Creds invalid will retry re allow for the token");
+                }
+                log.err("Error while geting response with token for folder id : " + folderId, tokenError);
+                nextPageToken = null;
             } catch (Exception e) {
                 log.err("Error while reading folder id : " + folderId, e);
                 nextPageToken = null;
@@ -350,6 +433,6 @@ public class SyncSharedDrives {
     }
 
     private static String normalizeName(String name) {
-        return name.replace("/", "_").replace(":", "").replace("\\", "_").trim();
+        return name.replace("/", "_").replace(":", "").replace("\\", "_").replace("\"", "").replace("\"", "").trim();
     }
 }

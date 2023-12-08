@@ -18,10 +18,11 @@ public class CustomLog {
 
     private String currentLoggedClassName;
     private java.io.File logFile;
+    private boolean debug=false;
 
     public CustomLog(Class<?> clazz) {
         this.currentLoggedClassName = clazz.getName();
-        SimpleDateFormat logFormater = new SimpleDateFormat("dd_MM_yy HH_mm_ss", Locale.FRANCE);
+        SimpleDateFormat logFormater = new SimpleDateFormat("yy_MM_dd HH_mm_ss", Locale.FRANCE);
         String pathLog = this.currentLoggedClassName + logFormater.format(new Date()) + ".log";
         logFile = new java.io.File(pathLog);
         try {
@@ -45,9 +46,11 @@ public class CustomLog {
     }
 
     public void debug(String msg) {
-        LogMsg logMsg = new LogMsg(Level.DEBUG, msg);
-        allLogs.add(logMsg);
-        processDisplay(logMsg);
+        if(debug){
+            LogMsg logMsg = new LogMsg(Level.DEBUG, msg);
+            allLogs.add(logMsg);
+            processDisplay(logMsg);
+        } 
     }
 
     public void info(String msg) {
