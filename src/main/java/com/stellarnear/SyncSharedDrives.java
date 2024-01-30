@@ -114,6 +114,7 @@ public class SyncSharedDrives {
         service = builder.build();
 
         log.info("Thanks for using SyncSharedDrive !");
+
         log.info("Reading Config file");
         java.io.File config = new java.io.File("./config.ini");
         FileReader frConf = new FileReader(config); // reads the file
@@ -144,14 +145,16 @@ public class SyncSharedDrives {
         log.info("Reading IN folder");
         java.io.File folderIn = new java.io.File(pathIN);
         if (!folderIn.exists()) {
-            String errMsg = "Input forlder don't exist ! please create it at : " + folderIn.getCanonicalPath();
+            String errMsg = "Input forlder don't exist ! please create it at : " +
+                    folderIn.getCanonicalPath();
             log.err(errMsg);
             throw new Exception(errMsg);
         }
 
         java.io.File directoryOut = new java.io.File(pathOUT);
         if (!directoryOut.exists()) {
-            String errMsg = "Output forlder don't exist ! please create it at : " + directoryOut.getCanonicalPath();
+            String errMsg = "Output forlder don't exist ! please create it at : " +
+                    directoryOut.getCanonicalPath();
             log.err(errMsg);
             throw new Exception(errMsg);
         }
@@ -175,7 +178,8 @@ public class SyncSharedDrives {
                         }
                     }
                 } catch (Exception e) {
-                    log.err("An error occured while treating drive : " + folderName + " [id:" + driveId + "]", e);
+                    log.err("An error occured while treating drive : " + folderName + " [id:" +
+                            driveId + "]", e);
                 }
 
             }
@@ -194,8 +198,7 @@ public class SyncSharedDrives {
 
                     try {
                         InputStream responseStream = connection.getInputStream();
-                        Document document = Jsoup.parse(responseStream, "UTF-8",
-                                mpcContribUrl);
+                        Document document = Jsoup.parse(responseStream, "UTF-8", mpcContribUrl);
 
                         Elements allTagA = document.getElementsByTag("a");
 
@@ -225,7 +228,8 @@ public class SyncSharedDrives {
                                     myWriter.close();
                                 } else {
                                     nOldDrive++;
-                                    log.info(element.text() + " already found in local listed drives (was known as "
+                                    log.info(element.text() +
+                                            " already found in local listed drives (was known as "
                                             + googleIDName.get(googleId) + ")");
                                 }
                             }
@@ -243,6 +247,7 @@ public class SyncSharedDrives {
             }
         }
 
+       
         // start downloading
         int nDrive = 0;
         long startTotal = System.currentTimeMillis();
@@ -265,40 +270,40 @@ public class SyncSharedDrives {
         }
 
         long endTotal = System.currentTimeMillis();
-        log.info("SyncSharedDrive ended it took a total time of " +
-
-                convertTime(endTotal - startTotal));
+        log.info("SyncSharedDrive ended it took a total time of " + convertTime(endTotal - startTotal));
         log.info(googleIDName.size() + " drives synchronized");
         log.info(totalNewFile + " new files downloaded");
         log.info(totalAlreadyFile + " were already present");
+        System.exit(0);
     }
 
     private static void treatDrive(String folderName, String driveId) throws Exception {
 
-        HashMap<String, String> foldersPathToID = new HashMap<>();
+        // startTest
 
-        searchAllFoldersRecursive(folderName.trim(), driveId, foldersPathToID);
+        long startSync = System.currentTimeMillis();
 
+        // HashMap to store folder ID to path mapping
+        HashMap<String, String> idToPath = new HashMap<>();
+        idToPath.put(driveId, folderName.trim());
+        // HashMap to store files based on their paths
         HashMap<String, List<File>> pathFile = new HashMap<>();
-        int nFiles = 0;
-        for (Entry<String, String> pathFolder : foldersPathToID.entrySet()) {
-            List<File> result = search(Type.FILE, pathFolder.getValue());
-            if (result.size() > 0) {
-                String targetPathFolder = pathFolder.getKey().trim();
-                pathFile.putIfAbsent(targetPathFolder, new ArrayList<>());
-                for (File file : result) {
-                    nFiles++;
-                    pathFile.get(targetPathFolder).add(file);
-                }
-            }
-        }
+
+        // Fetch all files and folders in the drive
+        AtomicInteger nFilesFound = new AtomicInteger(0);
+        fetchAllFiles(driveId, pathFile, idToPath, nFilesFound);
+
+        long endSync = System.currentTimeMillis();
+        log.info("Sync of drive paths for " + folderName + " took " + convertTime(endSync - startSync));
+
+        /// end test
 
         int nFileAlready = 0;
         AtomicInteger nFileDownloaded = new AtomicInteger(0);
         if (pathFile.isEmpty()) {
             log.info("No files found");
         } else {
-            log.info(nFiles + " files found on the drive");
+            log.info(nFilesFound + " files found on the drive");
 
             // Set<Thread> allDownlaodThread=new HashSet<>();
             int availableProcessors = Runtime.getRuntime().availableProcessors();
@@ -311,6 +316,7 @@ public class SyncSharedDrives {
                 new java.io.File(folderOutName.trim()).mkdirs();
 
                 for (File file : pathName.getValue()) {
+                    //in theory the safecheck is already done but in case ...
                     boolean targetedFile = file.getName().endsWith(".jpg")
                             || file.getName().endsWith(".jpeg")
                             || file.getName().endsWith(".png")
@@ -347,9 +353,9 @@ public class SyncSharedDrives {
             }
             if (allDls.size() > 0) {
                 ExecutorService executor = Executors.newFixedThreadPool(availableProcessors * 4);
-               
-                log.info(
-                        allDls.size() + " files will be downloaded using " + availableProcessors * 4
+
+                log.debug(
+                        allDls.size() + " images files will be downloaded using " + availableProcessors * 4
                                 + " parralel thread  !");
                 executor.invokeAll(allDls);
                 log.info(
@@ -360,6 +366,63 @@ public class SyncSharedDrives {
 
             totalNewFile += nFileDownloaded.get();
             totalAlreadyFile += nFileAlready;
+        }
+    }
+
+    private static void fetchAllFiles(String driveId, HashMap<String, List<File>> pathToFile, HashMap<String, String> folderIdToPath, AtomicInteger nFilesFound)
+            throws IOException, RefreshTokenException {
+        // Implement fetching all files and folders here
+        // Make sure to handle pagination if necessary
+        // ...
+        
+        com.google.api.services.drive.Drive.Files.List request = service.files()
+                .list()
+                .setQ("'" + driveId
+                        + "' in parents and trashed = false")
+                .setPageSize(1000).setFields("nextPageToken, files(id, name,parents,mimeType)");
+                
+        String nextPageToken = "go";
+        while (nextPageToken != null && nextPageToken.length() > 0) {
+            try {
+                FileList result = request.execute();
+                for (File file : result.getFiles()) {
+                    if (file.getMimeType().equals("application/vnd.google-apps.folder")) {
+                        folderIdToPath.put(file.getId(), folderIdToPath.get(file.getParents().get(0)) + "/" + normalizeName(file.getName()));
+                        fetchAllFiles(file.getId(), pathToFile, folderIdToPath, nFilesFound);
+                    } else {
+                        boolean targetedFile = file.getName().endsWith(".jpg")
+                        || file.getName().endsWith(".jpeg")
+                        || file.getName().endsWith(".png")
+                        || file.getName().endsWith(".PNG")
+                        || file.getName().endsWith(".JPEG")
+                        || file.getName().endsWith(".JPG");
+
+                        if(targetedFile){
+                            pathToFile.computeIfAbsent(folderIdToPath.get(file.getParents().get(0)), k -> new ArrayList<>()).add(file);
+                            nFilesFound.getAndIncrement();
+                        }  
+                    }
+                }
+
+                nextPageToken = result.getNextPageToken();
+                request.setPageToken(nextPageToken);
+
+            } catch (TokenResponseException tokenError) {
+                if (tokenError.getDetails().getError().equalsIgnoreCase("invalid_grant")) {
+                    log.err("Token no more valid removing it Please retry");
+                    java.io.File cred = new java.io.File("./tokens/StoredCredential");
+                    if (cred.exists()) {
+                        cred.delete();
+                    }
+                    throw new RefreshTokenException("Creds invalid will retry re allow for the token");
+                }
+                log.err("TOKEN Error while geting response with token for folder id : " + driveId, tokenError);
+                nextPageToken = null;
+            } catch (Exception e) {
+                log.err("Error while reading folder id : " + driveId, e);
+                nextPageToken = null;
+            }
+
         }
     }
 
@@ -376,61 +439,6 @@ public class SyncSharedDrives {
                 return (int) (l / 1000) + " seconds";
             }
         }
-    }
-
-    private static void searchAllFoldersRecursive(String nameFold, String id, HashMap<String, String> map)
-            throws IOException, RefreshTokenException {
-
-        map.putIfAbsent(nameFold, id);
-        List<File> result;
-
-        result = search(Type.FOLDER, id);
-
-        // dig deeper
-        if (result.size() > 0) {
-            for (File folder : result) {
-                searchAllFoldersRecursive(nameFold + java.io.File.separator + normalizeName(folder.getName()),
-                        folder.getId(), map);
-            }
-        }
-    }
-
-    private static List<com.google.api.services.drive.model.File> search(Type type, String folderId)
-            throws IOException, RefreshTokenException {
-        String nextPageToken = "go";
-        List<File> driveFolders = new ArrayList<>();
-        com.google.api.services.drive.Drive.Files.List request = service.files()
-                .list()
-                .setQ("'" + folderId
-                        + "' in parents and mimeType" + (type == Type.FOLDER ? "=" : "!=")
-                        + "'application/vnd.google-apps.folder' and trashed = false")
-                .setPageSize(100).setFields("nextPageToken, files(id, name)");
-
-        while (nextPageToken != null && nextPageToken.length() > 0) {
-            try {
-                FileList result = request.execute();
-                driveFolders.addAll(result.getFiles());
-                nextPageToken = result.getNextPageToken();
-                request.setPageToken(nextPageToken);
-                return driveFolders;
-            } catch (TokenResponseException tokenError) {
-                if (tokenError.getDetails().getError().equalsIgnoreCase("invalid_grant")) {
-                    log.err("Token no more valid removing it Please retry");
-                    java.io.File cred = new java.io.File("./tokens/StoredCredential");
-                    if (cred.exists()) {
-                        cred.delete();
-                    }
-                    throw new RefreshTokenException("Creds invalid will retry re allow for the token");
-                }
-                log.err("Error while geting response with token for folder id : " + folderId, tokenError);
-                nextPageToken = null;
-            } catch (Exception e) {
-                log.err("Error while reading folder id : " + folderId, e);
-                nextPageToken = null;
-            }
-
-        }
-        return new ArrayList<>();
     }
 
     private static String normalizeName(String name) {
