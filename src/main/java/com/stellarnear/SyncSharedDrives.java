@@ -27,6 +27,7 @@ import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.auth.oauth2.TokenResponseException;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
@@ -59,6 +60,7 @@ public class SyncSharedDrives {
 
     private static int totalNewFile = 0;
     private static int totalAlreadyFile = 0;
+    private static AtomicInteger totalFile;
 
     /**
      * Global instance of the scopes required by this quickstart.
@@ -249,127 +251,89 @@ public class SyncSharedDrives {
 
        
         // start downloading
-        int nDrive = 0;
+        AtomicInteger nDrive = new AtomicInteger(0);
+        totalFile = new AtomicInteger(0);
         long startTotal = System.currentTimeMillis();
+
+        int availableProcessors = Runtime.getRuntime().availableProcessors();
+
+        List<Callable<Void>> allSync = new ArrayList<>();
+
         for (Entry<String, String> entry : googleIDName.entrySet()) {
             try {
-                log.info("Starting sync of dive : " + entry.getValue());
-                long start = System.currentTimeMillis();
-                treatDrive(entry.getValue(), entry.getKey());
-                long end = System.currentTimeMillis();
-                nDrive++;
-                log.info("End sync of dive " + nDrive + "/" + googleIDName.entrySet().size() + " : " + entry.getValue()
-                        + " (it took " + convertTime(end - start) + ")");
-            } catch (RefreshTokenException eToken) {
-                log.err("Token wasn't good retrying !");
-                main(args);
+               
+
+                allSync.add(new Callable<Void>() {
+                    @Override
+                    public Void call() {
+                        try {
+                           
+                            AtomicInteger nFilesDriveFound = new AtomicInteger(0);
+                            long startSync = System.currentTimeMillis();
+
+                            treatDrive(entry.getValue(), entry.getKey(),nFilesDriveFound);
+
+                            long endSync = System.currentTimeMillis();
+
+                            nDrive.incrementAndGet();
+                            log.info("End sync of dive " + nDrive.get() + "/" + googleIDName.entrySet().size() + " : " + entry.getValue()+" it took " + convertTime(endSync - startSync) +" found "+nFilesDriveFound.get()+" images");
+                        }catch (Exception e) {
+                            log.warn("Could not sync the drive : " + entry.getValue(), e);
+                        }
+                        return null;
+                    }
+                });
+               
             } catch (Exception e) {
                 log.err("An error occured while treating drive : " + entry.getValue() + " [id:" + entry.getKey() + "]",
                         e);
+
             }
         }
+        if (allSync.size() > 0) {
+            ExecutorService executor = Executors.newFixedThreadPool(availableProcessors * 4);
+
+            log.debug(
+                allSync.size() + " drives will be sync using " + availableProcessors * 4
+                            + " parralel thread  !");
+            executor.invokeAll(allSync);
+          
+        } 
 
         long endTotal = System.currentTimeMillis();
         log.info("SyncSharedDrive ended it took a total time of " + convertTime(endTotal - startTotal));
         log.info(googleIDName.size() + " drives synchronized");
-        log.info(totalNewFile + " new files downloaded");
-        log.info(totalAlreadyFile + " were already present");
+        log.info(totalFile + " images founds");
+
         System.exit(0);
     }
 
-    private static void treatDrive(String folderName, String driveId) throws Exception {
+    private static void treatDrive(String folderName, String driveId,AtomicInteger nFilesDriveFound) throws Exception {
 
-        // startTest
-
-        long startSync = System.currentTimeMillis();
 
         // HashMap to store folder ID to path mapping
-        HashMap<String, String> idToPath = new HashMap<>();
-        idToPath.put(driveId, folderName.trim());
-        // HashMap to store files based on their paths
-        HashMap<String, List<File>> pathFile = new HashMap<>();
+        HashMap<String, String> nameToId = new HashMap<>();
+       
 
         // Fetch all files and folders in the drive
-        AtomicInteger nFilesFound = new AtomicInteger(0);
-        fetchAllFiles(driveId, pathFile, idToPath, nFilesFound);
+     
+        fetchAllFiles(driveId, nameToId,nFilesDriveFound);
 
-        long endSync = System.currentTimeMillis();
-        log.info("Sync of drive paths for " + folderName + " took " + convertTime(endSync - startSync));
+        try {
+            ObjectMapper objectMapper = new ObjectMapper();
+          //  String json = objectMapper.writeValueAsString(nameToId);
 
-        /// end test
-
-        int nFileAlready = 0;
-        AtomicInteger nFileDownloaded = new AtomicInteger(0);
-        if (pathFile.isEmpty()) {
-            log.info("No files found");
-        } else {
-            log.info(nFilesFound + " files found on the drive");
-
-            // Set<Thread> allDownlaodThread=new HashSet<>();
-            int availableProcessors = Runtime.getRuntime().availableProcessors();
-
-            List<Callable<Void>> allDls = new ArrayList<>();
-
-            for (Entry<String, List<File>> pathName : pathFile.entrySet()) {
-
-                String folderOutName = pathOUT + java.io.File.separator + pathName.getKey();
-                new java.io.File(folderOutName.trim()).mkdirs();
-
-                for (File file : pathName.getValue()) {
-                    //in theory the safecheck is already done but in case ...
-                    boolean targetedFile = file.getName().endsWith(".jpg")
-                            || file.getName().endsWith(".jpeg")
-                            || file.getName().endsWith(".png")
-                            || file.getName().endsWith(".PNG")
-                            || file.getName().endsWith(".JPEG")
-                            || file.getName().endsWith(".JPG");
-                    if (!targetedFile) {
-                        log.debug("Skipping unwanted file : " + file.getName());
-                        continue;
-                    }
-
-                    java.io.File img = new java.io.File(
-                            folderOutName + java.io.File.separator + normalizeName(file.getName()));
-                    if (img.exists()) {
-                        nFileAlready++;
-                        continue;
-                    }
-
-                    allDls.add(new Callable<Void>() {
-                        @Override
-                        public Void call() {
-                            try {
-                                FileOutputStream fout = new FileOutputStream(img);
-                                service.files().get(file.getId()).executeMediaAndDownloadTo(fout);
-                                nFileDownloaded.incrementAndGet();
-                            } catch (Exception e) {
-                                log.warn("Could not download the file : " + folderOutName + java.io.File.separator
-                                        + file.getName(), e);
-                            }
-                            return null;
-                        }
-                    });
-                }
-            }
-            if (allDls.size() > 0) {
-                ExecutorService executor = Executors.newFixedThreadPool(availableProcessors * 4);
-
-                log.debug(
-                        allDls.size() + " images files will be downloaded using " + availableProcessors * 4
-                                + " parralel thread  !");
-                executor.invokeAll(allDls);
-                log.info(
-                        nFileDownloaded.get() + " new files downloaded ! (" + nFileAlready + " files already present)");
-            } else {
-                log.info("No file to download (" + nFileAlready + " files already present)");
-            }
-
-            totalNewFile += nFileDownloaded.get();
-            totalAlreadyFile += nFileAlready;
+            // Save JSON to file
+            java.io.File file = new java.io.File(pathOUT+folderName+".json");
+            objectMapper.writeValue(file, nameToId);
+            log.info("Data stored in : "+ pathOUT+"/"+folderName+".json");
+        } catch (IOException e) {
+            e.printStackTrace();
         }
+
     }
 
-    private static void fetchAllFiles(String driveId, HashMap<String, List<File>> pathToFile, HashMap<String, String> folderIdToPath, AtomicInteger nFilesFound)
+    private static void fetchAllFiles(String driveId, HashMap<String, String> nameToId, AtomicInteger nFilesDriveFound)
             throws IOException, RefreshTokenException {
         // Implement fetching all files and folders here
         // Make sure to handle pagination if necessary
@@ -387,8 +351,7 @@ public class SyncSharedDrives {
                 FileList result = request.execute();
                 for (File file : result.getFiles()) {
                     if (file.getMimeType().equals("application/vnd.google-apps.folder")) {
-                        folderIdToPath.put(file.getId(), folderIdToPath.get(file.getParents().get(0)) + "/" + normalizeName(file.getName()));
-                        fetchAllFiles(file.getId(), pathToFile, folderIdToPath, nFilesFound);
+                        fetchAllFiles(file.getId(), nameToId,nFilesDriveFound);
                     } else {
                         boolean targetedFile = file.getName().endsWith(".jpg")
                         || file.getName().endsWith(".jpeg")
@@ -398,8 +361,9 @@ public class SyncSharedDrives {
                         || file.getName().endsWith(".JPG");
 
                         if(targetedFile){
-                            pathToFile.computeIfAbsent(folderIdToPath.get(file.getParents().get(0)), k -> new ArrayList<>()).add(file);
-                            nFilesFound.getAndIncrement();
+                            nameToId.put(normalizeName(file.getName()), file.getId());
+                            totalFile.getAndIncrement();
+                            nFilesDriveFound.getAndIncrement();
                         }  
                     }
                 }
@@ -414,7 +378,9 @@ public class SyncSharedDrives {
                     if (cred.exists()) {
                         cred.delete();
                     }
-                    throw new RefreshTokenException("Creds invalid will retry re allow for the token");
+                    log.err("Creds invalid will retry re allow for the token");
+                    System.exit(1);
+               
                 }
                 log.err("TOKEN Error while geting response with token for folder id : " + driveId, tokenError);
                 nextPageToken = null;
