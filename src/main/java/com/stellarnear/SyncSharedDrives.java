@@ -2,7 +2,6 @@ package com.stellarnear;
 
 import java.io.BufferedReader;
 import java.io.FileNotFoundException;
-import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -22,10 +21,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.api.client.auth.oauth2.Credential;
@@ -193,63 +190,63 @@ public class SyncSharedDrives {
         if (mpcContribUrl != null) {
             try {
                 URL url = new URL(mpcContribUrl);
-                HttpURLConnection connection;
-                try {
-                    connection = (HttpURLConnection) url.openConnection();
-                    connection.setRequestProperty("accept", "application/json");
+                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestProperty("accept", "application/json");
+                connection.setRequestProperty("User-Agent", "PostmanRuntime/7.39.0");
 
-                    try {
-                        InputStream responseStream = connection.getInputStream();
-                        Document document = Jsoup.parse(responseStream, "UTF-8", mpcContribUrl);
-
-                        Elements allTagA = document.getElementsByTag("a");
-
-                        int nNewDrive = 0;
-                        int nOldDrive = 0;
-                        for (Element element : allTagA) {
-                            if (element.attributes().get("href").contains("drive.google")) {
-
-                                String googleId = element.attributes().get("href")
-                                        .substring(element.attributes().get("href").lastIndexOf("/") + 1);
-
-                                if (googleId.contains("id=")) {
-                                    googleId = googleId.substring(googleId.indexOf("id=") + 3);
-                                }
-
-                                if (!googleIDName.containsKey(googleId)) {
-                                    log.info(element.text() + " is a new drive found from MPCautofill");
-                                    nNewDrive++;
-                                    googleIDName.put(googleId, element.text());
-                                    // saving the file for later run in case they reaname the folder name but it's
-                                    // still the same
-                                    java.io.File driveFile = new java.io.File(
-                                            pathIN + java.io.File.separator + element.text());
-                                    driveFile.createNewFile();
-                                    FileWriter myWriter = new FileWriter(driveFile.getAbsolutePath());
-                                    myWriter.write(googleId);
-                                    myWriter.close();
-                                } else {
-                                    nOldDrive++;
-                                    log.info(element.text() +
-                                            " already found in local listed drives (was known as "
-                                            + googleIDName.get(googleId) + ")");
-                                }
-                            }
-                        }
-                        log.info(nNewDrive + " new drives found in MPCfill");
-                        log.info(nOldDrive + " old drives already known");
-                    } catch (IOException e) {
-                        log.err("Could not open the stream url : " + mpcContribUrl, e);
+                int nNewDrive = 0;
+                int nOldDrive = 0;
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+                    StringBuilder response = new StringBuilder();
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        response.append(line);
                     }
-                } catch (IOException e1) {
-                    log.err("Could not connect the strem url : " + mpcContribUrl, e1);
+
+                    JSONObject jsonObject = new JSONObject(response.toString());
+                    JSONObject results = jsonObject.getJSONObject("results");
+
+                    for (String key : results.keySet()) {
+                        JSONObject child = results.getJSONObject(key);
+                        String name = child.getString("name");
+                        String googleId = child.getString("identifier");
+
+                        if (!googleIDName.containsKey(googleId)) {
+                            log.info(name + " is a new drive found from MPCautofill");
+                            nNewDrive++;
+                            googleIDName.put(googleId, name);
+                            // saving the file for later run in case they reaname the folder name but it's
+                            // still the same
+                            java.io.File driveFile = new java.io.File(
+                                    pathIN + java.io.File.separator + name);
+                            driveFile.createNewFile();
+                            FileWriter myWriter = new FileWriter(driveFile.getAbsolutePath());
+                            myWriter.write(googleId);
+                            myWriter.close();
+                        } else {
+                            nOldDrive++;
+                            log.info(name +
+                                    " already found in local listed drives (was known as "
+                                    + googleIDName.get(googleId) + ")");
+                        }
+                    }
+
+                    // Do what you want with the nameIdentifierMap here
+
+                } catch (IOException | JSONException e) {
+                    log.err("Could not open the stream url : " + mpcContribUrl, e);
+                    throw e;
                 }
+
+                log.info(nNewDrive + " new drives found in MPCfill");
+                log.info(nOldDrive + " old drives already known");
+
             } catch (MalformedURLException e2) {
                 log.err("The MPC url is malformed : " + mpcContribUrl, e2);
+                throw e2;
             }
         }
 
-       
         // start downloading
         AtomicInteger nDrive = new AtomicInteger(0);
         totalFile = new AtomicInteger(0);
@@ -261,29 +258,30 @@ public class SyncSharedDrives {
 
         for (Entry<String, String> entry : googleIDName.entrySet()) {
             try {
-               
 
                 allSync.add(new Callable<Void>() {
                     @Override
                     public Void call() {
                         try {
-                           
+
                             AtomicInteger nFilesDriveFound = new AtomicInteger(0);
                             long startSync = System.currentTimeMillis();
 
-                            treatDrive(entry.getValue(), entry.getKey(),nFilesDriveFound);
+                            treatDrive(entry.getValue(), entry.getKey(), nFilesDriveFound);
 
                             long endSync = System.currentTimeMillis();
 
                             nDrive.incrementAndGet();
-                            log.info("End sync of dive " + nDrive.get() + "/" + googleIDName.entrySet().size() + " : " + entry.getValue()+" it took " + convertTime(endSync - startSync) +" found "+nFilesDriveFound.get()+" images");
-                        }catch (Exception e) {
+                            log.info("End sync of dive " + nDrive.get() + "/" + googleIDName.entrySet().size() + " : "
+                                    + entry.getValue() + " it took " + convertTime(endSync - startSync) + " found "
+                                    + nFilesDriveFound.get() + " images");
+                        } catch (Exception e) {
                             log.warn("Could not sync the drive : " + entry.getValue(), e);
                         }
                         return null;
                     }
                 });
-               
+
             } catch (Exception e) {
                 log.err("An error occured while treating drive : " + entry.getValue() + " [id:" + entry.getKey() + "]",
                         e);
@@ -294,11 +292,11 @@ public class SyncSharedDrives {
             ExecutorService executor = Executors.newFixedThreadPool(availableProcessors * 4);
 
             log.debug(
-                allSync.size() + " drives will be sync using " + availableProcessors * 4
+                    allSync.size() + " drives will be sync using " + availableProcessors * 4
                             + " parralel thread  !");
             executor.invokeAll(allSync);
-          
-        } 
+
+        }
 
         long endTotal = System.currentTimeMillis();
         log.info("SyncSharedDrive ended it took a total time of " + convertTime(endTotal - startTotal));
@@ -308,25 +306,23 @@ public class SyncSharedDrives {
         System.exit(0);
     }
 
-    private static void treatDrive(String folderName, String driveId,AtomicInteger nFilesDriveFound) throws Exception {
-
+    private static void treatDrive(String folderName, String driveId, AtomicInteger nFilesDriveFound) throws Exception {
 
         // HashMap to store folder ID to path mapping
         HashMap<String, String> nameToId = new HashMap<>();
-       
 
         // Fetch all files and folders in the drive
-     
-        fetchAllFiles(driveId, nameToId,nFilesDriveFound);
+
+        fetchAllFiles(driveId, nameToId, nFilesDriveFound);
 
         try {
             ObjectMapper objectMapper = new ObjectMapper();
-          //  String json = objectMapper.writeValueAsString(nameToId);
+            // String json = objectMapper.writeValueAsString(nameToId);
 
             // Save JSON to file
-            java.io.File file = new java.io.File(pathOUT+folderName+".json");
+            java.io.File file = new java.io.File(pathOUT + folderName + ".json");
             objectMapper.writeValue(file, nameToId);
-            log.info("Data stored in : "+ pathOUT+"/"+folderName+".json");
+            log.info("Data stored in : " + pathOUT + "/" + folderName + ".json");
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -338,33 +334,33 @@ public class SyncSharedDrives {
         // Implement fetching all files and folders here
         // Make sure to handle pagination if necessary
         // ...
-        
+
         com.google.api.services.drive.Drive.Files.List request = service.files()
                 .list()
                 .setQ("'" + driveId
                         + "' in parents and trashed = false")
                 .setPageSize(1000).setFields("nextPageToken, files(id, name,parents,mimeType)");
-                
+
         String nextPageToken = "go";
         while (nextPageToken != null && nextPageToken.length() > 0) {
             try {
                 FileList result = request.execute();
                 for (File file : result.getFiles()) {
                     if (file.getMimeType().equals("application/vnd.google-apps.folder")) {
-                        fetchAllFiles(file.getId(), nameToId,nFilesDriveFound);
+                        fetchAllFiles(file.getId(), nameToId, nFilesDriveFound);
                     } else {
                         boolean targetedFile = file.getName().endsWith(".jpg")
-                        || file.getName().endsWith(".jpeg")
-                        || file.getName().endsWith(".png")
-                        || file.getName().endsWith(".PNG")
-                        || file.getName().endsWith(".JPEG")
-                        || file.getName().endsWith(".JPG");
+                                || file.getName().endsWith(".jpeg")
+                                || file.getName().endsWith(".png")
+                                || file.getName().endsWith(".PNG")
+                                || file.getName().endsWith(".JPEG")
+                                || file.getName().endsWith(".JPG");
 
-                        if(targetedFile){
+                        if (targetedFile) {
                             nameToId.put(normalizeName(file.getName()), file.getId());
                             totalFile.getAndIncrement();
                             nFilesDriveFound.getAndIncrement();
-                        }  
+                        }
                     }
                 }
 
@@ -380,7 +376,6 @@ public class SyncSharedDrives {
                     }
                     log.err("Creds invalid will retry re allow for the token");
                     System.exit(1);
-               
                 }
                 log.err("TOKEN Error while geting response with token for folder id : " + driveId, tokenError);
                 nextPageToken = null;

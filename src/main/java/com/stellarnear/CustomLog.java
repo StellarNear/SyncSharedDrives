@@ -135,7 +135,7 @@ public class CustomLog {
             line += " " + msg;
 
             if (exception != null) {
-                line += "Error stacktrace : " + exception.toString();
+                line += "\nError stacktrace : " + exception.toString();
                 for (StackTraceElement elem : exception.getStackTrace()) {
                     line += elem.toString();
                 }
